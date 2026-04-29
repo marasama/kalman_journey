@@ -1,5 +1,5 @@
 [package]
-name = "kalmam_1D_static_system"
+name = "kalmam_1D_process_noise"
 version = "0.1.0"
 edition = "2024"
 
