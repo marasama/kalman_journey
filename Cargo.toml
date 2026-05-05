@@ -1,8 +1,8 @@
 [package]
-name = "kalmam_1D_process_noise"
+name = "kalman_2d_multivariate_xy_car"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rand_distr = "0.6.0"
-rand = "0.10.1"
+matrix = {git = "https://github.com/marasama/ft_matrix.git"}
+num-traits = "0.2.19"
