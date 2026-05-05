@@ -55,21 +55,14 @@ enum KalmanInitState {
 struct Kalman<K: Float> {
     x: Vector<K>,
     x_prior: Vector<K>,
-    z: Vector<K>,
     F: Matrix<K>,
-    u: Vector<K>,
     G: Matrix<K>,
     P: Matrix<K>,
     P_prior: Matrix<K>,
     Q: Matrix<K>,
     R: Matrix<K>,
-    w: Vector<K>,
-    v: Vector<K>,
     H: Matrix<K>,
     K: Matrix<K>,
-    delta_time: K,
-    std_dev_meas: K,
-    std_dev_rand: K,
     control_var: bool,
     n_x: usize,
     n_z: usize,
@@ -82,23 +75,16 @@ impl<K: Float> Kalman<K> {
         Kalman {
             x: Vector::empty(),
             x_prior: Vector::empty(),
-            z: Vector::empty(),
             F: Matrix::empty(),
-            u: Vector::empty(),
             G: Matrix::empty(),
             P: Matrix::empty(),
             P_prior: Matrix::empty(),
             Q: Matrix::empty(),
             R: Matrix::empty(),
-            w: Vector::empty(),
-            v: Vector::empty(),
             H: Matrix::empty(),
             K: Matrix::empty(),
-            delta_time: K::zero(),
-            std_dev_meas: K::zero(),
-            std_dev_rand: K::zero(),
             control_var: is_control_var,
-            state: KalmanInitState::Empty as u8,
+            state: 1 << KalmanInitState::Empty as u8,
             n_x,
             n_z,
             n_u,
@@ -150,8 +136,8 @@ impl<K: Float> Kalman<K> {
         }
         assert_eq!(
             G_mat.size(),
-            (self.n_x, self.n_x),
-            "Estimate Covariance size must be (n_x, n_x)"
+            (self.n_x, self.n_u),
+            "Estimate Covariance size must be (n_x, n_u)"
         );
         self.G = G_mat.to_owned();
         self.not_empty();
@@ -198,9 +184,11 @@ impl<K: Float> Kalman<K> {
 }
 
 impl<K: Float + AddAssign + SubAssign + Display> Kalman<K> {
-    /// Makes Prediction For Next Step (Control Variable not Available
+    /// Makes Prediction For Next Step
+    /// If there is no Control Matrix just pass a Vector::empty()
     pub fn predict(&mut self, u_vec: Vector<K>) {
-        self.P_prior = self.F.mul_mat_ref(&self.P).mul_mat_ref(&self.F.transpose());
+        self.P_prior =
+            self.F.mul_mat_ref(&self.P).mul_mat_ref(&self.F.transpose()) + self.Q.clone();
         self.x_prior = self.F.mul_vec_ref(&self.x);
         if self.control_var {
             assert_eq!(
@@ -209,11 +197,8 @@ impl<K: Float + AddAssign + SubAssign + Display> Kalman<K> {
                 "Input vector size must be {}",
                 self.n_u
             );
-            self.x_prior.add(&self.G.mul_vec_ref(&self.u));
+            self.x_prior.add(&self.G.mul_vec_ref(&u_vec));
         }
-        println!("Prediction Result");
-        println!("P_prior: {}", self.P_prior);
-        println!("x_prior: {}", self.x_prior);
     }
 
     pub fn update(&mut self, z_vec: Vector<K>) {
@@ -226,10 +211,9 @@ impl<K: Float + AddAssign + SubAssign + Display> Kalman<K> {
         // Update Kalman Gain
         self.update_kalman_gain();
         // Update Current State Estimation Using Prior Estimation
-        println!("Starting To Estimate \n{}", z_vec);
-        println!("Sizes \n{}, \n{}", self.H, self.x_prior);
-        println!("Size \n{}", self.H.mul_vec_ref(&self.x_prior));
-        let tmp = z_vec - self.H.mul_vec_ref(&self.x_prior);
+        let tmp = self
+            .K
+            .mul_vec_ref(&(z_vec - self.H.mul_vec_ref(&self.x_prior)));
         self.x = self.x_prior.clone() + tmp;
         // Estimate Current Estimate Uncertanity
         self.update_estimation_covariance();
@@ -245,11 +229,9 @@ impl<K: Float + AddAssign + SubAssign + Display> Kalman<K> {
             .P_prior
             .mul_mat_ref(&self.H.transpose())
             .mul_mat_ref(&tmp.inverse().unwrap());
-        println!("New kalman gain \n{}", self.K);
     }
 
     pub fn update_estimation_covariance(&mut self) {
-        println!("Error in this line!");
         let joseph = self.K.mul_mat_ref(&self.R).mul_mat_ref(&self.K.transpose());
         let mut main_part: Matrix<K> = identity_matrix(self.n_x) - self.K.mul_mat_ref(&self.H);
         self.P = main_part
@@ -298,6 +280,7 @@ fn main() {
         (20.87, 298.77),
     ];
     let mut a: Kalman<f64> = Kalman::new(false, 6, 2, 0);
+    // Delta_T = 1s
     let F_mat: Matrix<f64> = Matrix::from([
         [1., 1., 0.5, 0., 0., 0.],
         [0., 1., 1., 0., 0., 0.],
@@ -335,8 +318,13 @@ fn main() {
     } else {
         println!("Something is not working!");
     }
-    for meas in measurements {
+    for (i, meas) in measurements.iter().enumerate() {
         a.predict(Vector::empty());
         a.update(Vector::from([meas.0, meas.1]));
+        println!("{} ----------------------------", i + 1);
+        println!("{:?} \n\n{:.4}", meas, a.x);
+        println!("{:.4}", a.P);
+        println!("{:.4}", a.K);
+        println!("{} ----------------------------", i + 1);
     }
 }
