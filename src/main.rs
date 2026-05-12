@@ -8,7 +8,7 @@ use matrix::{
     matrix::{funcs::inverse::identity_matrix, Matrix},
     vector::Vector,
 };
-use num_traits::Float;
+use num_traits::{pow, Float};
 
 enum KalmanInitState {
     /// Nothing Done Yet
@@ -33,6 +33,18 @@ enum KalmanInitState {
     RdyToGo = 0b11111110,
 }
 
+enum StateTransationMatrix<K: Float> {
+    Empty,
+    Linear(Matrix<K>),
+    Extended(fn(&Vector<K>) -> Matrix<K>, fn(&Vector<K>) -> Matrix<K>),
+}
+
+enum ObservationMatrix<K: Float> {
+    Empty,
+    Linear(Matrix<K>),
+    Extended(fn(&Vector<K>) -> Vector<K>, fn(&Vector<K>) -> Matrix<K>),
+}
+
 /// Kalman Elements
 /// x = State Vector             -- n_x · 1
 /// z = Measurement Vector       -- n_z · 1
@@ -55,18 +67,19 @@ enum KalmanInitState {
 struct Kalman<K: Float> {
     x: Vector<K>,
     x_prior: Vector<K>,
-    F: Matrix<K>,
+    F: StateTransationMatrix<K>,
     G: Matrix<K>,
     P: Matrix<K>,
     P_prior: Matrix<K>,
     Q: Matrix<K>,
     R: Matrix<K>,
-    H: Matrix<K>,
+    H: ObservationMatrix<K>,
     K: Matrix<K>,
     control_var: bool,
     n_x: usize,
     n_z: usize,
     n_u: usize,
+    // EKF Part
     state: u8,
 }
 
@@ -75,13 +88,13 @@ impl<K: Float> Kalman<K> {
         Kalman {
             x: Vector::empty(),
             x_prior: Vector::empty(),
-            F: Matrix::empty(),
+            F: StateTransationMatrix::Empty,
             G: Matrix::empty(),
             P: Matrix::empty(),
             P_prior: Matrix::empty(),
             Q: Matrix::empty(),
             R: Matrix::empty(),
-            H: Matrix::empty(),
+            H: ObservationMatrix::Empty,
             K: Matrix::empty(),
             control_var: is_control_var,
             state: 1 << KalmanInitState::Empty as u8,
@@ -102,7 +115,14 @@ impl<K: Float> Kalman<K> {
             (self.n_x, self.n_x),
             "State Transition Matrix size must be (n_x, n_x)"
         );
-        self.F = F_mat.to_owned();
+        self.F = StateTransationMatrix::Linear(F_mat);
+        self.not_empty();
+        self.state |= 1 << KalmanInitState::StateTransMatOk as u8;
+    }
+
+    pub fn init_F_EKF(&mut self, f: fn(&Vector<K>) -> Matrix<K>, jac: fn(&Vector<K>) -> Matrix<K>) {
+        println!("Be aware!, F(x) and Jacobian must return n_x . n_x size matrices!");
+        self.F = StateTransationMatrix::Extended(f, jac);
         self.not_empty();
         self.state |= 1 << KalmanInitState::StateTransMatOk as u8;
     }
@@ -122,7 +142,7 @@ impl<K: Float> Kalman<K> {
         assert_eq!(
             Q_mat.size(),
             (self.n_x, self.n_x),
-            "Estimate Covariance size must be (n_x, n_x)"
+            "Process Noise Covariance size must be (n_x, n_x)"
         );
         self.Q = Q_mat.to_owned();
         self.not_empty();
@@ -137,7 +157,7 @@ impl<K: Float> Kalman<K> {
         assert_eq!(
             G_mat.size(),
             (self.n_x, self.n_u),
-            "Estimate Covariance size must be (n_x, n_u)"
+            "Control Matrix size must be (n_x, n_u)"
         );
         self.G = G_mat.to_owned();
         self.not_empty();
@@ -148,7 +168,7 @@ impl<K: Float> Kalman<K> {
         assert_eq!(
             R_mat.size(),
             (self.n_z, self.n_z),
-            "Estimate Covariance size must be (n_z, n_z)"
+            "Measurement Covariance size must be (n_z, n_z)"
         );
         self.R = R_mat.to_owned();
         self.not_empty();
@@ -159,12 +179,17 @@ impl<K: Float> Kalman<K> {
         assert_eq!(
             H_mat.size(),
             (self.n_z, self.n_x),
-            "Estimate Covariance size must be (n_z, n_x)"
+            "Observation Matrix size must be (n_z, n_x)"
         );
-        self.H = H_mat.to_owned();
+        self.H = ObservationMatrix::Linear(H_mat);
         self.not_empty();
         self.state |= 1 << KalmanInitState::ObservationMatOk as u8;
     }
+
+    pub fn init_H_EKF(&mut self, f: fn(&Vector<K>) -> Vector<K>, jac: fn(&Vector<K>) -> Matrix<K>) {
+        println!("Be aware!, H(x) and Jacobian must return n_z . n_x size matrices!");
+    }
+
     pub fn init_x(&mut self, x_vec: Vector<K>) {
         assert_eq!(x_vec.size(), self.n_x, "State vector wrong size!");
         self.x = x_vec.to_owned();
@@ -243,84 +268,70 @@ impl<K: Float + AddAssign + SubAssign + Display> Kalman<K> {
 
 fn main() {
     let measurements = [
-        (301.5, -401.46),
-        (298.23, -375.44),
-        (297.83, -346.15),
-        (300.42, -320.2),
-        (301.94, -300.08),
-        (299.5, -274.12),
-        (305.98, -253.45),
-        (301.25, -226.4),
-        (299.73, -200.65),
-        (299.2, -171.62),
-        (298.62, -152.11),
-        (301.84, -125.19),
-        (299.6, -93.4),
-        (295.3, -74.79),
-        (299.3, -49.12),
-        (301.95, -28.73),
-        (296.3, 2.99),
-        (295.11, 25.65),
-        (295.12, 49.86),
-        (289.9, 72.87),
-        (283.51, 96.34),
-        (276.42, 120.4),
-        (264.22, 144.69),
-        (250.25, 168.06),
-        (236.66, 184.99),
-        (217.47, 205.11),
-        (199.75, 221.82),
-        (179.7, 238.3),
-        (160., 253.02),
-        (140.92, 267.19),
-        (113.53, 270.71),
-        (93.68, 285.86),
-        (69.71, 288.48),
-        (45.93, 292.9),
-        (20.87, 298.77),
+        (6.43, 39.81),   // 1
+        (1.3, 39.67),    // 2
+        (39.43, 39.81),  // 3
+        (45.89, 39.84),  // 4
+        (41.44, 40.05),  // 5
+        (48.7, 39.85),   // 6
+        (78.06, 39.78),  // 7
+        (80.08, 39.65),  // 8
+        (61.77, 39.67),  // 9
+        (75.15, 39.78),  // 10
+        (110.39, 39.59), // 11
+        (127.83, 39.87), // 12
+        (158.75, 39.85), // 13
+        (156.55, 39.59), // 14
+        (213.32, 39.84), // 15
+        (229.82, 39.9),  // 16
+        (262.8, 39.63),  // 17
+        (297.57, 39.59), // 18
+        (335.69, 39.76), // 19
+        (367.92, 39.79), // 20
+        (377.19, 39.73), // 21
+        (411.18, 39.93), // 22
+        (460.7, 39.83),  // 23
+        (468.39, 39.85), // 24
+        (553.9, 39.94),  // 25
+        (583.97, 39.86), // 26
+        (655.15, 39.76), // 27
+        (723.09, 39.86), // 28
+        (736.85, 39.74), // 29
+        (787.22, 39.94), // 30
     ];
-    let mut a: Kalman<f64> = Kalman::new(false, 6, 2, 0);
-    // Delta_T = 1s
-    let F_mat: Matrix<f64> = Matrix::from([
-        [1., 1., 0.5, 0., 0., 0.],
-        [0., 1., 1., 0., 0., 0.],
-        [0., 0., 1., 0., 0., 0.],
-        [0., 0., 0., 1., 1., 0.5],
-        [0., 0., 0., 0., 1., 1.],
-        [0., 0., 0., 0., 0., 1.],
-    ]);
+    let mut a: Kalman<f64> = Kalman::new(true, true, 2, 1, 1);
+    const DELTA_T: f64 = 0.25;
+    let F_mat: Matrix<f64> = Matrix::from([[1., 0.25], [0., 1.]]);
     a.init_F(F_mat);
-    let Q_mat: Matrix<f64> = Matrix::from([
-        [0.01, 0.02, 0.02, 0., 0., 0.],
-        [0.02, 0.04, 0.04, 0., 0., 0.],
-        [0.02, 0.04, 0.04, 0., 0., 0.],
-        [0., 0., 0., 0.01, 0.02, 0.02],
-        [0., 0., 0., 0.02, 0.04, 0.04],
-        [0., 0., 0., 0.02, 0.04, 0.04],
-    ]);
+    let delta_t_4_4 = num_traits::pow(DELTA_T, 4) / 4.;
+    let delta_t_3_2 = num_traits::pow(DELTA_T, 3) / 2.;
+    let delta_t_2 = num_traits::pow(DELTA_T, 2);
+    let mut Q_mat: Matrix<f64> =
+        Matrix::from([[delta_t_4_4, delta_t_3_2], [delta_t_3_2, delta_t_2]]);
+    Q_mat.scl(pow(0.1, 2));
     a.init_Q(Q_mat);
-    let R_mat: Matrix<f64> = Matrix::from([[9., 0.], [0., 9.]]);
+    let R_mat: Matrix<f64> = Matrix::from([[400.]]);
     a.init_R(R_mat);
-    let H_mat: Matrix<f64> = Matrix::from([[1., 0., 0., 0., 0., 0.], [0., 0., 0., 1., 0., 0.]]);
+    let G_mat: Matrix<f64> = Matrix::from([[0.0313], [DELTA_T]]);
+    a.init_G(G_mat);
+    let H_mat: Matrix<f64> = Matrix::from([[1., 0.]]);
     a.init_H(H_mat);
-    a.init_x(Vector::from([0., 0., 0., 0., 0., 0.]));
-    let P_mat: Matrix<f64> = Matrix::from([
-        [500., 0., 0., 0., 0., 0.],
-        [0., 500., 0., 0., 0., 0.],
-        [0., 0., 500., 0., 0., 0.],
-        [0., 0., 0., 500., 0., 0.],
-        [0., 0., 0., 0., 500., 0.],
-        [0., 0., 0., 0., 0., 500.],
-    ]);
+    let P_mat: Matrix<f64> = Matrix::from([[500., 0.], [0., 500.]]);
     a.init_P(P_mat);
+
+    a.init_x(Vector::from([0., 0.]));
     if a.ok_check() {
         println!("Everything ready to go!");
     } else {
         println!("Something is not working!");
     }
+
     for (i, meas) in measurements.iter().enumerate() {
-        a.predict(Vector::empty());
-        a.update(Vector::from([meas.0, meas.1]));
+        if i == 0 {
+            a.predict(Vector::from([0.]));
+        }
+        a.update(Vector::from([meas.0]));
+        a.predict(Vector::from([meas.1 - 9.81]));
         println!("{} ----------------------------", i + 1);
         println!("{:?} \n\n{:.4}", meas, a.x);
         println!("{:.4}", a.P);
