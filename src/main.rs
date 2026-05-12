@@ -1,7 +1,7 @@
 use core::f64;
 use std::{
     fmt::Display,
-    ops::{AddAssign, SubAssign},
+    ops::{Add, AddAssign, SubAssign},
 };
 
 use matrix::{
@@ -33,15 +33,15 @@ enum KalmanInitState {
     RdyToGo = 0b11111110,
 }
 
-enum StateTransationMatrix<K: Float> {
+enum StateTransationMatrix<'a, K: Float> {
     Empty,
-    Linear(Matrix<K>),
+    Linear(&'a mut Matrix<K>),
     Extended(fn(&Vector<K>) -> Matrix<K>, fn(&Vector<K>) -> Matrix<K>),
 }
 
-enum ObservationMatrix<K: Float> {
+enum ObservationMatrix<'a, K: Float> {
     Empty,
-    Linear(Matrix<K>),
+    Linear(&'a mut Matrix<K>),
     Extended(fn(&Vector<K>) -> Vector<K>, fn(&Vector<K>) -> Matrix<K>),
 }
 
@@ -64,16 +64,17 @@ enum ObservationMatrix<K: Float> {
 /// n_x = Number of States in State Vector
 /// n_z = Number of Measured States
 /// n_u = Number of Elements of the Input Variable
-struct Kalman<K: Float> {
+struct Kalman<'a, K: Float> {
     x: Vector<K>,
     x_prior: Vector<K>,
-    F: StateTransationMatrix<K>,
+    z: Vector<K>,
+    F: StateTransationMatrix<'a, K>,
     G: Matrix<K>,
     P: Matrix<K>,
     P_prior: Matrix<K>,
     Q: Matrix<K>,
     R: Matrix<K>,
-    H: ObservationMatrix<K>,
+    H: ObservationMatrix<'a, K>,
     K: Matrix<K>,
     control_var: bool,
     n_x: usize,
@@ -83,11 +84,12 @@ struct Kalman<K: Float> {
     state: u8,
 }
 
-impl<K: Float> Kalman<K> {
+impl<'a, K: Float> Kalman<'a, K> {
     pub fn new(is_control_var: bool, n_x: usize, n_z: usize, n_u: usize) -> Self {
         Kalman {
             x: Vector::empty(),
             x_prior: Vector::empty(),
+            z: Vector::empty(),
             F: StateTransationMatrix::Empty,
             G: Matrix::empty(),
             P: Matrix::empty(),
@@ -105,11 +107,11 @@ impl<K: Float> Kalman<K> {
     }
 }
 
-impl<K: Float> Kalman<K> {
+impl<'a, K: Float> Kalman<'a, K> {
     fn not_empty(&mut self) {
         self.state &= !(1u8);
     }
-    pub fn init_F(&mut self, F_mat: Matrix<K>) {
+    pub fn init_F(&mut self, F_mat: &'a mut Matrix<K>) {
         assert_eq!(
             F_mat.size(),
             (self.n_x, self.n_x),
@@ -146,7 +148,7 @@ impl<K: Float> Kalman<K> {
         );
         self.Q = Q_mat.to_owned();
         self.not_empty();
-        self.state |= 1 << KalmanInitState::ProcNoiseCovOk as u8;
+        self.state |= 1 << KalmanInitState::MeasCovarianceOk as u8;
     }
 
     pub fn init_G(&mut self, G_mat: Matrix<K>) {
@@ -175,7 +177,7 @@ impl<K: Float> Kalman<K> {
         self.state |= 1 << KalmanInitState::MeasCovarianceOk as u8;
     }
 
-    pub fn init_H(&mut self, H_mat: Matrix<K>) {
+    pub fn init_H(&mut self, H_mat: &'a mut Matrix<K>) {
         assert_eq!(
             H_mat.size(),
             (self.n_z, self.n_x),
@@ -188,6 +190,9 @@ impl<K: Float> Kalman<K> {
 
     pub fn init_H_EKF(&mut self, f: fn(&Vector<K>) -> Vector<K>, jac: fn(&Vector<K>) -> Matrix<K>) {
         println!("Be aware!, H(x) and Jacobian must return n_z . n_x size matrices!");
+        self.H = ObservationMatrix::Extended(f, jac);
+        self.not_empty();
+        self.state |= 1 << KalmanInitState::ObservationMatOk as u8;
     }
 
     pub fn init_x(&mut self, x_vec: Vector<K>) {
@@ -198,7 +203,7 @@ impl<K: Float> Kalman<K> {
     }
 }
 
-impl<K: Float> Kalman<K> {
+impl<'a, K: Float> Kalman<'a, K> {
     pub fn ok_check(&self) -> bool {
         assert_ne!(self.state, 1, "Filter is empty");
         if self.control_var {
@@ -208,7 +213,7 @@ impl<K: Float> Kalman<K> {
     }
 }
 
-impl<K: Float + AddAssign + SubAssign + Display> Kalman<K> {
+impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
     /// Makes Prediction For Next Step
     /// If there is no Control Matrix just pass a Vector::empty()
     pub fn predict(&mut self, u_vec: Vector<K>) {
@@ -234,26 +239,43 @@ impl<K: Float + AddAssign + SubAssign + Display> Kalman<K> {
             self.n_z
         );
         // Update Kalman Gain
-        self.update_kalman_gain();
+        self.update_kalman_gain(&z_vec);
         // Update Current State Estimation Using Prior Estimation
-        let tmp = self
-            .K
-            .mul_vec_ref(&(z_vec - self.H.mul_vec_ref(&self.x_prior)));
-        self.x = self.x_prior.clone() + tmp;
+        match &self.H {
+            ObservationMatrix::Linear(h) => {
+                self.x = self.K.mul_vec_ref(&(z_vec.sub_ref(&h.mul_vec_ref(&self.x_prior)))).add_ref(&self.x_prior);
+            },
+            ObservationMatrix::Extended(_f, jac) => {
+                self.x = self.K.mul_vec_ref(&(z_vec.sub_ref(&jac(&z_vec).mul_vec_ref(&self.x_prior)))).add_ref(&self.x_prior);
+            },
+            _ => println!("Observation Matrix not initialized!")
+        }
         // Estimate Current Estimate Uncertanity
         self.update_estimation_covariance();
     }
 
-    pub fn update_kalman_gain(&mut self) {
-        let mut tmp: Matrix<K> = self
-            .H
-            .mul_mat_ref(&self.P_prior)
-            .mul_mat_ref(&self.H.transpose());
-        tmp.add(&self.R);
-        self.K = self
-            .P_prior
-            .mul_mat_ref(&self.H.transpose())
-            .mul_mat_ref(&tmp.inverse().unwrap());
+    pub fn update_kalman_gain(&mut self, z_vec: &Vector<K>) {
+        match &self.H {
+            ObservationMatrix::Linear(h) => {
+                let mut tmp: Matrix<K> = h.mul_mat_ref(&self.P_prior).mul_mat_ref(&h.transpose());
+                tmp.add(&self.R);
+                self.K = self
+                    .P_prior
+                    .mul_mat_ref(&h.transpose())
+                    .mul_mat_ref(&tmp.inverse().unwrap())
+            }
+            ObservationMatrix::Extended(_f, jac) => {
+                let mut tmp: Matrix<K> = jac(&z_vec)
+                    .mul_mat_ref(&self.P_prior)
+                    .mul_mat_ref(&jac(&z_vec).transpose());
+                tmp.add(&self.R);
+                self.K = self
+                    .P_prior
+                    .mul_mat_ref(&jac(&z_vec).transpose())
+                    .mul_mat_ref(&tmp.inverse().unwrap())
+            }
+            _ => println!("Observation Matrix not initialized!"),
+        }
     }
 
     pub fn update_estimation_covariance(&mut self) {
@@ -267,39 +289,7 @@ impl<K: Float + AddAssign + SubAssign + Display> Kalman<K> {
 }
 
 fn main() {
-    let measurements = [
-        (6.43, 39.81),   // 1
-        (1.3, 39.67),    // 2
-        (39.43, 39.81),  // 3
-        (45.89, 39.84),  // 4
-        (41.44, 40.05),  // 5
-        (48.7, 39.85),   // 6
-        (78.06, 39.78),  // 7
-        (80.08, 39.65),  // 8
-        (61.77, 39.67),  // 9
-        (75.15, 39.78),  // 10
-        (110.39, 39.59), // 11
-        (127.83, 39.87), // 12
-        (158.75, 39.85), // 13
-        (156.55, 39.59), // 14
-        (213.32, 39.84), // 15
-        (229.82, 39.9),  // 16
-        (262.8, 39.63),  // 17
-        (297.57, 39.59), // 18
-        (335.69, 39.76), // 19
-        (367.92, 39.79), // 20
-        (377.19, 39.73), // 21
-        (411.18, 39.93), // 22
-        (460.7, 39.83),  // 23
-        (468.39, 39.85), // 24
-        (553.9, 39.94),  // 25
-        (583.97, 39.86), // 26
-        (655.15, 39.76), // 27
-        (723.09, 39.86), // 28
-        (736.85, 39.74), // 29
-        (787.22, 39.94), // 30
-    ];
-    let mut a: Kalman<f64> = Kalman::new(true, true, 2, 1, 1);
+    let mut a: Kalman<f64> = Kalman::new(true, 2, 1, 1);
     const DELTA_T: f64 = 0.25;
     let F_mat: Matrix<f64> = Matrix::from([[1., 0.25], [0., 1.]]);
     a.init_F(F_mat);
