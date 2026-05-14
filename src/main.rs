@@ -76,6 +76,7 @@ struct Kalman<'a, K: Float> {
     R: Matrix<K>,
     H: ObservationMatrix<'a, K>,
     K: Matrix<K>,
+    I: Matrix<K>,
     control_var: bool,
     n_x: usize,
     n_z: usize,
@@ -98,6 +99,7 @@ impl<'a, K: Float> Kalman<'a, K> {
             R: Matrix::empty(),
             H: ObservationMatrix::Empty,
             K: Matrix::empty(),
+            I: identity_matrix(n_x),
             control_var: is_control_var,
             state: 1 << KalmanInitState::Empty as u8,
             n_x,
@@ -217,9 +219,24 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
     /// Makes Prediction For Next Step
     /// If there is no Control Matrix just pass a Vector::empty()
     pub fn predict(&mut self, u_vec: Vector<K>) {
-        self.P_prior =
-            self.F.mul_mat_ref(&self.P).mul_mat_ref(&self.F.transpose()) + self.Q.clone();
-        self.x_prior = self.F.mul_vec_ref(&self.x);
+        match &self.F {
+            StateTransationMatrix::Linear(f) => {
+                self.P_prior = f
+                    .mul_mat_ref(&self.P)
+                    .mul_mat_ref(&f.transpose())
+                    .add_ref(&self.Q);
+                self.x_prior = f.mul_vec_ref(&self.x);
+            }
+
+            StateTransationMatrix::Extended(f, jac) => {
+                self.P_prior = jac(&self.x_prior)
+                    .mul_mat_ref(&self.P)
+                    .mul_mat_ref(&jac(&self.x_prior))
+                    .add_ref(&self.Q);
+                self.x_prior = f(&self.x_prior).mul_vec_ref(&self.x);
+            }
+            _ => println!("State Transition Matrix not initialized!"),
+        }
         if self.control_var {
             assert_eq!(
                 u_vec.size(),
@@ -227,7 +244,7 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
                 "Input vector size must be {}",
                 self.n_u
             );
-            self.x_prior.add(&self.G.mul_vec_ref(&u_vec));
+            self.x_prior.add_ref(&self.G.mul_vec_ref(&u_vec));
         }
     }
 
@@ -239,22 +256,28 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
             self.n_z
         );
         // Update Kalman Gain
-        self.update_kalman_gain(&z_vec);
+        self.update_kalman_gain();
         // Update Current State Estimation Using Prior Estimation
         match &self.H {
             ObservationMatrix::Linear(h) => {
-                self.x = self.K.mul_vec_ref(&(z_vec.sub_ref(&h.mul_vec_ref(&self.x_prior)))).add_ref(&self.x_prior);
-            },
+                self.x = self
+                    .K
+                    .mul_vec_ref(&(z_vec.sub_ref(&h.mul_vec_ref(&self.x_prior))))
+                    .add_ref(&self.x_prior);
+            }
             ObservationMatrix::Extended(_f, jac) => {
-                self.x = self.K.mul_vec_ref(&(z_vec.sub_ref(&jac(&z_vec).mul_vec_ref(&self.x_prior)))).add_ref(&self.x_prior);
-            },
-            _ => println!("Observation Matrix not initialized!")
+                self.x = self
+                    .K
+                    .mul_vec_ref(&(z_vec.sub_ref(&jac(&z_vec).mul_vec_ref(&self.x_prior))))
+                    .add_ref(&self.x_prior);
+            }
+            _ => println!("Observation Matrix not initialized!"),
         }
         // Estimate Current Estimate Uncertanity
-        self.update_estimation_covariance();
+        self.update_estimation_covariance(&z_vec);
     }
 
-    pub fn update_kalman_gain(&mut self, z_vec: &Vector<K>) {
+    pub fn update_kalman_gain(&mut self) {
         match &self.H {
             ObservationMatrix::Linear(h) => {
                 let mut tmp: Matrix<K> = h.mul_mat_ref(&self.P_prior).mul_mat_ref(&h.transpose());
@@ -265,34 +288,43 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
                     .mul_mat_ref(&tmp.inverse().unwrap())
             }
             ObservationMatrix::Extended(_f, jac) => {
-                let mut tmp: Matrix<K> = jac(&z_vec)
+                let mut tmp: Matrix<K> = jac(&self.x_prior)
                     .mul_mat_ref(&self.P_prior)
-                    .mul_mat_ref(&jac(&z_vec).transpose());
+                    .mul_mat_ref(&jac(&self.x_prior).transpose());
                 tmp.add(&self.R);
                 self.K = self
                     .P_prior
-                    .mul_mat_ref(&jac(&z_vec).transpose())
+                    .mul_mat_ref(&jac(&self.x_prior).transpose())
                     .mul_mat_ref(&tmp.inverse().unwrap())
             }
             _ => println!("Observation Matrix not initialized!"),
         }
     }
 
-    pub fn update_estimation_covariance(&mut self) {
+    pub fn update_estimation_covariance(&mut self, z_vec: &Vector<K>) {
         let joseph = self.K.mul_mat_ref(&self.R).mul_mat_ref(&self.K.transpose());
-        let mut main_part: Matrix<K> = identity_matrix(self.n_x) - self.K.mul_mat_ref(&self.H);
+        let mut main_part: Matrix<K> = Matrix::empty();
+        match &self.H {
+            ObservationMatrix::Linear(h) => {
+                main_part = self.I.sub_ref(&self.K.mul_mat_ref(h));
+            }
+            ObservationMatrix::Extended(_f, jac) => {
+                main_part = self.I.sub_ref(&self.K.mul_mat_ref(&jac(&z_vec)));
+            }
+            _ => println!("Observation Matrix not initialized!"),
+        }
         self.P = main_part
             .mul_mat_ref(&self.P_prior)
             .mul_mat_ref(&main_part.transpose())
-            + joseph;
+            .add_ref(&joseph);
     }
 }
 
 fn main() {
     let mut a: Kalman<f64> = Kalman::new(true, 2, 1, 1);
     const DELTA_T: f64 = 0.25;
-    let F_mat: Matrix<f64> = Matrix::from([[1., 0.25], [0., 1.]]);
-    a.init_F(F_mat);
+    let mut F_mat: Matrix<f64> = Matrix::from([[1., 0.25], [0., 1.]]);
+    a.init_F(&mut F_mat);
     let delta_t_4_4 = num_traits::pow(DELTA_T, 4) / 4.;
     let delta_t_3_2 = num_traits::pow(DELTA_T, 3) / 2.;
     let delta_t_2 = num_traits::pow(DELTA_T, 2);
@@ -304,8 +336,8 @@ fn main() {
     a.init_R(R_mat);
     let G_mat: Matrix<f64> = Matrix::from([[0.0313], [DELTA_T]]);
     a.init_G(G_mat);
-    let H_mat: Matrix<f64> = Matrix::from([[1., 0.]]);
-    a.init_H(H_mat);
+    let mut H_mat: Matrix<f64> = Matrix::from([[1., 0.]]);
+    a.init_H(&mut H_mat);
     let P_mat: Matrix<f64> = Matrix::from([[500., 0.], [0., 500.]]);
     a.init_P(P_mat);
 
