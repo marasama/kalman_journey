@@ -266,10 +266,8 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
                     .add_ref(&self.x_prior);
             }
             ObservationMatrix::Extended(f, _jac) => {
-                println!("f: {}", &f(&self.x_prior).size());
-                println!("K: {:?}", self.K.size());
-                println!("z_vec: {:?}", z_vec.size());
-                println!("x_prior: {:?}", self.x_prior.size());
+                println!("H_f: \n{}", f(&self.x_prior));
+                println!("H_jac: \n{}", _jac(&self.x_prior));
                 self.x = self
                     .K
                     .mul_vec_ref(&(z_vec.sub_ref(&f(&self.x_prior))))
@@ -324,28 +322,28 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
     }
 }
 
-fn ekf_H_f<K: Float>(vec: &Vector<K>) -> Vector<K> {
+fn ekf_H_f<K: Float>(input: &Vector<K>) -> Vector<K> {
     Vector::from([
-        (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
-        (vec.data[1] / vec.data[0]).atan(),
+        (pow(input.data[0], 2) + pow(input.data[3], 2)).sqrt(),
+        (input.data[3] / input.data[0]).atan(),
     ])
 }
 
 fn ekf_H_jac<K: Float>(vec: &Vector<K>) -> Matrix<K> {
     Matrix::from([
         [
-            vec.data[0] / (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
+            vec.data[0] / (vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3]).sqrt(),
             K::zero(),
             K::zero(),
-            vec.data[1] / (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
+            vec.data[3] / (vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3]).sqrt(),
             K::zero(),
             K::zero(),
         ],
         [
-            -vec.data[1] / (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
+            -vec.data[3] / (vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3]).sqrt(),
             K::zero(),
             K::zero(),
-            vec.data[0] / (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
+            vec.data[0] / (vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3]).sqrt(),
             K::zero(),
             K::zero(),
         ],
@@ -436,10 +434,12 @@ fn main() {
         }
         a.update(Vector::from([meas.0, meas.1]));
         a.predict(Vector::empty());
-        println!("{} ----------------------------", i + 1);
-        println!("{:?} \n\n{:.4}", meas, a.x);
-        println!("{:.4}", a.P);
-        println!("{:.4}", a.K);
-        println!("{} ----------------------------", i + 1);
+        if i < 3 || i == 34 {
+            println!("{} ----------------------------", i + 1);
+            println!("{:.4}", a.x_prior);
+            println!("{:.4}", a.P);
+            println!("{:.4}", a.K);
+            println!("{} ----------------------------", i + 1);
+        }
     }
 }
