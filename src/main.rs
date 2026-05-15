@@ -150,7 +150,7 @@ impl<'a, K: Float> Kalman<'a, K> {
         );
         self.Q = Q_mat.to_owned();
         self.not_empty();
-        self.state |= 1 << KalmanInitState::MeasCovarianceOk as u8;
+        self.state |= 1 << KalmanInitState::ProcNoiseCovOk as u8;
     }
 
     pub fn init_G(&mut self, G_mat: Matrix<K>) {
@@ -228,12 +228,12 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
                 self.x_prior = f.mul_vec_ref(&self.x);
             }
 
-            StateTransationMatrix::Extended(f, jac) => {
+            StateTransationMatrix::Extended(_f, jac) => {
                 self.P_prior = jac(&self.x_prior)
                     .mul_mat_ref(&self.P)
                     .mul_mat_ref(&jac(&self.x_prior))
                     .add_ref(&self.Q);
-                self.x_prior = f(&self.x_prior).mul_vec_ref(&self.x);
+                self.x_prior = jac(&self.x).mul_vec_ref(&self.x);
             }
             _ => println!("State Transition Matrix not initialized!"),
         }
@@ -265,23 +265,27 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
                     .mul_vec_ref(&(z_vec.sub_ref(&h.mul_vec_ref(&self.x_prior))))
                     .add_ref(&self.x_prior);
             }
-            ObservationMatrix::Extended(_f, jac) => {
+            ObservationMatrix::Extended(f, _jac) => {
+                println!("f: {}", &f(&self.x_prior).size());
+                println!("K: {:?}", self.K.size());
+                println!("z_vec: {:?}", z_vec.size());
+                println!("x_prior: {:?}", self.x_prior.size());
                 self.x = self
                     .K
-                    .mul_vec_ref(&(z_vec.sub_ref(&jac(&z_vec).mul_vec_ref(&self.x_prior))))
+                    .mul_vec_ref(&(z_vec.sub_ref(&f(&self.x_prior))))
                     .add_ref(&self.x_prior);
             }
             _ => println!("Observation Matrix not initialized!"),
         }
         // Estimate Current Estimate Uncertanity
-        self.update_estimation_covariance(&z_vec);
+        self.update_estimation_covariance();
     }
 
     pub fn update_kalman_gain(&mut self) {
         match &self.H {
             ObservationMatrix::Linear(h) => {
                 let mut tmp: Matrix<K> = h.mul_mat_ref(&self.P_prior).mul_mat_ref(&h.transpose());
-                tmp.add(&self.R);
+                tmp.add_ref(&self.R);
                 self.K = self
                     .P_prior
                     .mul_mat_ref(&h.transpose())
@@ -291,7 +295,7 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
                 let mut tmp: Matrix<K> = jac(&self.x_prior)
                     .mul_mat_ref(&self.P_prior)
                     .mul_mat_ref(&jac(&self.x_prior).transpose());
-                tmp.add(&self.R);
+                tmp.add_ref(&self.R);
                 self.K = self
                     .P_prior
                     .mul_mat_ref(&jac(&self.x_prior).transpose())
@@ -301,7 +305,7 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
         }
     }
 
-    pub fn update_estimation_covariance(&mut self, z_vec: &Vector<K>) {
+    pub fn update_estimation_covariance(&mut self) {
         let joseph = self.K.mul_mat_ref(&self.R).mul_mat_ref(&self.K.transpose());
         let mut main_part: Matrix<K> = Matrix::empty();
         match &self.H {
@@ -309,7 +313,7 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
                 main_part = self.I.sub_ref(&self.K.mul_mat_ref(h));
             }
             ObservationMatrix::Extended(_f, jac) => {
-                main_part = self.I.sub_ref(&self.K.mul_mat_ref(&jac(&z_vec)));
+                main_part = self.I.sub_ref(&self.K.mul_mat_ref(&jac(&self.x_prior)));
             }
             _ => println!("Observation Matrix not initialized!"),
         }
@@ -320,28 +324,106 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
     }
 }
 
+fn ekf_H_f<K: Float>(vec: &Vector<K>) -> Vector<K> {
+    Vector::from([
+        (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
+        (vec.data[1] / vec.data[0]).atan(),
+    ])
+}
+
+fn ekf_H_jac<K: Float>(vec: &Vector<K>) -> Matrix<K> {
+    Matrix::from([
+        [
+            vec.data[0] / (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
+            K::zero(),
+            K::zero(),
+            vec.data[1] / (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
+            K::zero(),
+            K::zero(),
+        ],
+        [
+            -vec.data[1] / (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
+            K::zero(),
+            K::zero(),
+            vec.data[0] / (vec.data[0] * vec.data[0] + vec.data[1] * vec.data[1]).sqrt(),
+            K::zero(),
+            K::zero(),
+        ],
+    ])
+}
+
 fn main() {
-    let mut a: Kalman<f64> = Kalman::new(true, 2, 1, 1);
-    const DELTA_T: f64 = 0.25;
-    let mut F_mat: Matrix<f64> = Matrix::from([[1., 0.25], [0., 1.]]);
+    let measurements = [
+        (502.55, -0.9316),
+        (477.34, -0.8977),
+        (457.21, -0.8512),
+        (442.94, -0.8114),
+        (427.27, -0.7852),
+        (406.05, -0.7392),
+        (400.73, -0.7052),
+        (377.32, -0.6478),
+        (360.27, -0.59),
+        (345.93, -0.5183),
+        (333.34, -0.4698),
+        (328.07, -0.3952),
+        (315.48, -0.3026),
+        (301.41, -0.2445),
+        (302.87, -0.1626),
+        (304.25, -0.0937),
+        (294.46, 0.0085),
+        (294.29, 0.0856),
+        (299.38, 0.1675),
+        (299.37, 0.2467),
+        (300.68, 0.329),
+        (304.1, 0.4149),
+        (301.96, 0.504),
+        (300.3, 0.5934),
+        (301.9, 0.667),
+        (296.7, 0.7537),
+        (297.07, 0.8354),
+        (295.29, 0.9195),
+        (296.31, 1.0039),
+        (300.62, 1.0923),
+        (292.3, 1.1546),
+        (298.11, 1.2564),
+        (298.07, 1.3274),
+        (298.92, 1.409),
+        (298.04, 1.5011),
+    ];
+    let mut a: Kalman<f64> = Kalman::new(false, 6, 2, 0);
+    let mut F_mat: Matrix<f64> = Matrix::from([
+        [1., 1., 0.5, 0., 0., 0.],
+        [0., 1., 1., 0., 0., 0.],
+        [0., 0., 1., 0., 0., 0.],
+        [0., 0., 0., 1., 1., 0.5],
+        [0., 0., 0., 0., 1., 1.],
+        [0., 0., 0., 0., 0., 1.],
+    ]);
     a.init_F(&mut F_mat);
-    let delta_t_4_4 = num_traits::pow(DELTA_T, 4) / 4.;
-    let delta_t_3_2 = num_traits::pow(DELTA_T, 3) / 2.;
-    let delta_t_2 = num_traits::pow(DELTA_T, 2);
-    let mut Q_mat: Matrix<f64> =
-        Matrix::from([[delta_t_4_4, delta_t_3_2], [delta_t_3_2, delta_t_2]]);
-    Q_mat.scl(pow(0.1, 2));
+    let mut Q_mat: Matrix<f64> = Matrix::from([
+        [0.25, 0.5, 0.5, 0., 0., 0.],
+        [0.5, 1., 1., 0., 0., 0.],
+        [0.5, 1., 1., 0., 0., 0.],
+        [0., 0., 0., 0.25, 0.5, 0.5],
+        [0., 0., 0., 0.5, 1., 1.],
+        [0., 0., 0., 0.5, 1., 1.],
+    ]);
+    Q_mat.scl(pow(0.2, 2));
     a.init_Q(Q_mat);
-    let R_mat: Matrix<f64> = Matrix::from([[400.]]);
+    let R_mat: Matrix<f64> = Matrix::from([[25., 0.], [0., pow(0.0087, 2)]]);
     a.init_R(R_mat);
-    let G_mat: Matrix<f64> = Matrix::from([[0.0313], [DELTA_T]]);
-    a.init_G(G_mat);
-    let mut H_mat: Matrix<f64> = Matrix::from([[1., 0.]]);
-    a.init_H(&mut H_mat);
-    let P_mat: Matrix<f64> = Matrix::from([[500., 0.], [0., 500.]]);
+    a.init_H_EKF(ekf_H_f, ekf_H_jac);
+    let P_mat: Matrix<f64> = Matrix::from([
+        [500., 0., 0., 0., 0., 0.],
+        [0., 500., 0., 0., 0., 0.],
+        [0., 0., 500., 0., 0., 0.],
+        [0., 0., 0., 500., 0., 0.],
+        [0., 0., 0., 0., 500., 0.],
+        [0., 0., 0., 0., 0., 500.],
+    ]);
     a.init_P(P_mat);
 
-    a.init_x(Vector::from([0., 0.]));
+    a.init_x(Vector::from([400., 0., 0., -300., 0., 0.]));
     if a.ok_check() {
         println!("Everything ready to go!");
     } else {
@@ -350,10 +432,10 @@ fn main() {
 
     for (i, meas) in measurements.iter().enumerate() {
         if i == 0 {
-            a.predict(Vector::from([0.]));
+            a.predict(Vector::empty());
         }
-        a.update(Vector::from([meas.0]));
-        a.predict(Vector::from([meas.1 - 9.81]));
+        a.update(Vector::from([meas.0, meas.1]));
+        a.predict(Vector::empty());
         println!("{} ----------------------------", i + 1);
         println!("{:?} \n\n{:.4}", meas, a.x);
         println!("{:.4}", a.P);
