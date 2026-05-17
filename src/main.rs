@@ -8,7 +8,7 @@ use matrix::{
     matrix::{funcs::inverse::identity_matrix, Matrix},
     vector::Vector,
 };
-use num_traits::{pow, Float};
+use num_traits::{pow, Float, Pow};
 
 enum KalmanInitState {
     /// Nothing Done Yet
@@ -321,106 +321,51 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
 }
 
 fn ekf_H_f<K: Float>(input: &Vector<K>) -> Vector<K> {
+    Vector::from([K::from(0.5).unwrap() * input.data[0].sin()])
+}
+
+fn ekf_H_jac<K: Float>(input: &Vector<K>) -> Matrix<K> {
+    Matrix::from([[K::from(0.5).unwrap() * input.data[0].cos(), K::zero()]])
+}
+
+const L_div_G_times_delta_t: f64 = -(9.8 / 0.5) * 0.05;
+
+fn ekf_F_f<K: Float>(input: &Vector<K>) -> Vector<K> {
     Vector::from([
-        (pow(input.data[0], 2) + pow(input.data[3], 2)).sqrt(),
-        (input.data[3] / input.data[0]).atan(),
+        input.data[0] + (input.data[1] * K::from(0.05).unwrap()),
+        input.data[1] + (K::from(L_div_G_times_delta_t).unwrap() * (input.data[0]).sin()),
     ])
 }
 
-fn ekf_H_jac<K: Float>(vec: &Vector<K>) -> Matrix<K> {
-    let r_squared = vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3];
+fn ekf_F_jac<K: Float>(input: &Vector<K>) -> Matrix<K> {
     Matrix::from([
+        [K::one(), K::from(0.05).unwrap()],
         [
-            vec.data[0] / r_squared.sqrt(),
-            K::zero(),
-            K::zero(),
-            vec.data[3] / r_squared.sqrt(),
-            K::zero(),
-            K::zero(),
-        ],
-        [
-            -vec.data[3] / r_squared,
-            K::zero(),
-            K::zero(),
-            vec.data[0] / r_squared,
-            K::zero(),
-            K::zero(),
+            K::from(L_div_G_times_delta_t).unwrap() * input.data[0].cos(),
+            K::one(),
         ],
     ])
 }
 
 fn main() {
     let measurements = [
-        (502.55, -0.9316),
-        (477.34, -0.8977),
-        (457.21, -0.8512),
-        (442.94, -0.8114),
-        (427.27, -0.7852),
-        (406.05, -0.7392),
-        (400.73, -0.7052),
-        (377.32, -0.6478),
-        (360.27, -0.59),
-        (345.93, -0.5183),
-        (333.34, -0.4698),
-        (328.07, -0.3952),
-        (315.48, -0.3026),
-        (301.41, -0.2445),
-        (302.87, -0.1626),
-        (304.25, -0.0937),
-        (294.46, 0.0085),
-        (294.29, 0.0856),
-        (299.38, 0.1675),
-        (299.37, 0.2467),
-        (300.68, 0.329),
-        (304.1, 0.4149),
-        (301.96, 0.504),
-        (300.3, 0.5934),
-        (301.9, 0.667),
-        (296.7, 0.7537),
-        (297.07, 0.8354),
-        (295.29, 0.9195),
-        (296.31, 1.0039),
-        (300.62, 1.0923),
-        (292.3, 1.1546),
-        (298.11, 1.2564),
-        (298.07, 1.3274),
-        (298.92, 1.409),
-        (298.04, 1.5011),
+        0.119, 0.113, 0.12, 0.101, 0.099, 0.063, 0.008, -0.017, -0.037, -0.05,
     ];
-    let mut a: Kalman<f64> = Kalman::new(false, 6, 2, 0);
-    let mut F_mat: Matrix<f64> = Matrix::from([
-        [1., 1., 0.5, 0., 0., 0.],
-        [0., 1., 1., 0., 0., 0.],
-        [0., 0., 1., 0., 0., 0.],
-        [0., 0., 0., 1., 1., 0.5],
-        [0., 0., 0., 0., 1., 1.],
-        [0., 0., 0., 0., 0., 1.],
-    ]);
-    a.init_F(&mut F_mat);
+    let mut a: Kalman<f64> = Kalman::new(false, 2, 1, 0);
+    let delta_t = 0.05f64;
+    a.init_F_EKF(ekf_F_f, ekf_F_jac);
     let mut Q_mat: Matrix<f64> = Matrix::from([
-        [0.25, 0.5, 0.5, 0., 0., 0.],
-        [0.5, 1., 1., 0., 0., 0.],
-        [0.5, 1., 1., 0., 0., 0.],
-        [0., 0., 0., 0.25, 0.5, 0.5],
-        [0., 0., 0., 0.5, 1., 1.],
-        [0., 0., 0., 0.5, 1., 1.],
+        [delta_t.pow(4) / 4., delta_t.pow(3) / 2.],
+        [delta_t.pow(3) / 2., delta_t.pow(2)],
     ]);
-    Q_mat.scl(pow(0.2, 2));
     a.init_Q(Q_mat);
-    let R_mat: Matrix<f64> = Matrix::from([[25., 0.], [0., (0.0087 * 0.0087)]]);
+    let R_mat: Matrix<f64> = Matrix::from([[0.01 * 0.01]]);
     a.init_R(R_mat);
     a.init_H_EKF(ekf_H_f, ekf_H_jac);
-    let P_mat: Matrix<f64> = Matrix::from([
-        [500., 0., 0., 0., 0., 0.],
-        [0., 500., 0., 0., 0., 0.],
-        [0., 0., 500., 0., 0., 0.],
-        [0., 0., 0., 500., 0., 0.],
-        [0., 0., 0., 0., 500., 0.],
-        [0., 0., 0., 0., 0., 500.],
-    ]);
+    let P_mat: Matrix<f64> = Matrix::from([[5., 0.], [0., 5.]]);
     a.init_P(P_mat);
 
-    a.init_x(Vector::from([400., 0., 0., -300., 0., 0.]));
+    a.init_x(Vector::from([0.0873, 0.]));
     if a.ok_check() {
         println!("Everything ready to go!");
     } else {
@@ -430,15 +375,14 @@ fn main() {
     for (i, meas) in measurements.iter().enumerate() {
         if i == 0 {
             a.predict(Vector::empty());
+            println!("x_1,0 (prior): {:.6}", a.x_prior); // should be [0.087300, -0.085413]
         }
-        a.update(Vector::from([meas.0, meas.1]));
+        a.update(Vector::from([*meas]));
         a.predict(Vector::empty());
-        if i < 3 || i == 34 {
-            println!("{} ----------------------------", i + 1);
-            println!("{:.4}", a.x);
-            println!("{:.4}", a.P);
-            println!("{:.4}", a.K);
-            println!("{} ----------------------------", i + 1);
-        }
+        println!("{} ----------------------------", i + 1);
+        println!("{:.4}", a.x);
+        println!("{:.4}", a.P);
+        println!("{:.4}", a.K);
+        println!("{} ----------------------------", i + 1);
     }
 }
