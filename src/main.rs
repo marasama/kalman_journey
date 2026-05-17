@@ -36,7 +36,7 @@ enum KalmanInitState {
 enum StateTransationMatrix<'a, K: Float> {
     Empty,
     Linear(&'a mut Matrix<K>),
-    Extended(fn(&Vector<K>) -> Matrix<K>, fn(&Vector<K>) -> Matrix<K>),
+    Extended(fn(&Vector<K>) -> Vector<K>, fn(&Vector<K>) -> Matrix<K>),
 }
 
 enum ObservationMatrix<'a, K: Float> {
@@ -124,7 +124,7 @@ impl<'a, K: Float> Kalman<'a, K> {
         self.state |= 1 << KalmanInitState::StateTransMatOk as u8;
     }
 
-    pub fn init_F_EKF(&mut self, f: fn(&Vector<K>) -> Matrix<K>, jac: fn(&Vector<K>) -> Matrix<K>) {
+    pub fn init_F_EKF(&mut self, f: fn(&Vector<K>) -> Vector<K>, jac: fn(&Vector<K>) -> Matrix<K>) {
         println!("Be aware!, F(x) and Jacobian must return n_x . n_x size matrices!");
         self.F = StateTransationMatrix::Extended(f, jac);
         self.not_empty();
@@ -228,12 +228,12 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
                 self.x_prior = f.mul_vec_ref(&self.x);
             }
 
-            StateTransationMatrix::Extended(_f, jac) => {
-                self.P_prior = jac(&self.x_prior)
+            StateTransationMatrix::Extended(f, jac) => {
+                self.P_prior = jac(&self.x)
                     .mul_mat_ref(&self.P)
-                    .mul_mat_ref(&jac(&self.x_prior))
+                    .mul_mat_ref(&jac(&self.x).transpose())
                     .add_ref(&self.Q);
-                self.x_prior = jac(&self.x).mul_vec_ref(&self.x);
+                self.x_prior = f(&self.x);
             }
             _ => println!("State Transition Matrix not initialized!"),
         }
@@ -266,8 +266,6 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
                     .add_ref(&self.x_prior);
             }
             ObservationMatrix::Extended(f, _jac) => {
-                println!("H_f: \n{}", f(&self.x_prior));
-                println!("H_jac: \n{}", _jac(&self.x_prior));
                 self.x = self
                     .K
                     .mul_vec_ref(&(z_vec.sub_ref(&f(&self.x_prior))))
@@ -330,20 +328,21 @@ fn ekf_H_f<K: Float>(input: &Vector<K>) -> Vector<K> {
 }
 
 fn ekf_H_jac<K: Float>(vec: &Vector<K>) -> Matrix<K> {
+    let r_squared = vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3];
     Matrix::from([
         [
-            vec.data[0] / (vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3]).sqrt(),
+            vec.data[0] / r_squared.sqrt(),
             K::zero(),
             K::zero(),
-            vec.data[3] / (vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3]).sqrt(),
+            vec.data[3] / r_squared.sqrt(),
             K::zero(),
             K::zero(),
         ],
         [
-            -vec.data[3] / (vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3]).sqrt(),
+            -vec.data[3] / r_squared,
             K::zero(),
             K::zero(),
-            vec.data[0] / (vec.data[0] * vec.data[0] + vec.data[3] * vec.data[3]).sqrt(),
+            vec.data[0] / r_squared,
             K::zero(),
             K::zero(),
         ],
@@ -408,7 +407,7 @@ fn main() {
     ]);
     Q_mat.scl(pow(0.2, 2));
     a.init_Q(Q_mat);
-    let R_mat: Matrix<f64> = Matrix::from([[25., 0.], [0., pow(0.0087, 2)]]);
+    let R_mat: Matrix<f64> = Matrix::from([[25., 0.], [0., (0.0087 * 0.0087)]]);
     a.init_R(R_mat);
     a.init_H_EKF(ekf_H_f, ekf_H_jac);
     let P_mat: Matrix<f64> = Matrix::from([
@@ -436,7 +435,7 @@ fn main() {
         a.predict(Vector::empty());
         if i < 3 || i == 34 {
             println!("{} ----------------------------", i + 1);
-            println!("{:.4}", a.x_prior);
+            println!("{:.4}", a.x);
             println!("{:.4}", a.P);
             println!("{:.4}", a.K);
             println!("{} ----------------------------", i + 1);
