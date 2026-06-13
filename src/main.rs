@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use core::f64;
 use std::{
     fmt::Display,
@@ -8,7 +9,7 @@ use matrix::{
     matrix::{funcs::inverse::identity_matrix, Matrix},
     vector::Vector,
 };
-use num_traits::{pow, Float, Pow};
+use num_traits::{Float, Pow};
 
 enum KalmanInitState {
     /// Nothing Done Yet
@@ -33,16 +34,27 @@ enum KalmanInitState {
     RdyToGo = 0b11111110,
 }
 
+enum KalmanVariation {
+    /// Linear Kalman Filter
+    LKF,
+    /// Extended Kalman Filter
+    EKF,
+    /// Unscented Kalman Filter
+    UKF,
+}
+
 enum StateTransationMatrix<'a, K: Float> {
     Empty,
     Linear(&'a mut Matrix<K>),
     Extended(fn(&Vector<K>) -> Vector<K>, fn(&Vector<K>) -> Matrix<K>),
+    Unscented(fn(&Vector<K>) -> Vector<K>),
 }
 
 enum ObservationMatrix<'a, K: Float> {
     Empty,
     Linear(&'a mut Matrix<K>),
     Extended(fn(&Vector<K>) -> Vector<K>, fn(&Vector<K>) -> Matrix<K>),
+    Unscented(fn(&Vector<K>) -> Vector<K>),
 }
 
 /// Kalman Elements
@@ -65,6 +77,7 @@ enum ObservationMatrix<'a, K: Float> {
 /// n_z = Number of Measured States
 /// n_u = Number of Elements of the Input Variable
 struct Kalman<'a, K: Float> {
+    var: KalmanVariation,
     x: Vector<K>,
     x_prior: Vector<K>,
     z: Vector<K>,
@@ -81,13 +94,19 @@ struct Kalman<'a, K: Float> {
     n_x: usize,
     n_z: usize,
     n_u: usize,
-    // EKF Part
     state: u8,
 }
 
 impl<'a, K: Float> Kalman<'a, K> {
-    pub fn new(is_control_var: bool, n_x: usize, n_z: usize, n_u: usize) -> Self {
+    pub fn new(
+        var: KalmanVariation,
+        is_control_var: bool,
+        n_x: usize,
+        n_z: usize,
+        n_u: usize,
+    ) -> Self {
         Kalman {
+            var,
             x: Vector::empty(),
             x_prior: Vector::empty(),
             z: Vector::empty(),
@@ -127,6 +146,13 @@ impl<'a, K: Float> Kalman<'a, K> {
     pub fn init_F_EKF(&mut self, f: fn(&Vector<K>) -> Vector<K>, jac: fn(&Vector<K>) -> Matrix<K>) {
         println!("Be aware!, F(x) and Jacobian must return n_x . n_x size matrices!");
         self.F = StateTransationMatrix::Extended(f, jac);
+        self.not_empty();
+        self.state |= 1 << KalmanInitState::StateTransMatOk as u8;
+    }
+
+    pub fn init_F_UKF(&mut self, f: fn(&Vector<K>) -> Vector<K>, jac: fn(&Vector<K>) -> Matrix<K>) {
+        println!("Be aware!, F(x) must return n_x . n_x size matrix!");
+        self.F = StateTransationMatrix::Unscented(f, jac);
         self.not_empty();
         self.state |= 1 << KalmanInitState::StateTransMatOk as u8;
     }
@@ -193,6 +219,13 @@ impl<'a, K: Float> Kalman<'a, K> {
     pub fn init_H_EKF(&mut self, f: fn(&Vector<K>) -> Vector<K>, jac: fn(&Vector<K>) -> Matrix<K>) {
         println!("Be aware!, H(x) and Jacobian must return n_z . n_x size matrices!");
         self.H = ObservationMatrix::Extended(f, jac);
+        self.not_empty();
+        self.state |= 1 << KalmanInitState::ObservationMatOk as u8;
+    }
+
+    pub fn init_H_UKF(&mut self, f: fn(&Vector<K>) -> Vector<K>) {
+        println!("Be aware!, H(x) and Jacobian must return n_z . n_x size matrices!");
+        self.H = ObservationMatrix::Unscented(f);
         self.not_empty();
         self.state |= 1 << KalmanInitState::ObservationMatOk as u8;
     }
@@ -320,31 +353,8 @@ impl<'a, K: Float + AddAssign + SubAssign + Display> Kalman<'a, K> {
     }
 }
 
-fn ekf_H_f<K: Float>(input: &Vector<K>) -> Vector<K> {
+fn ukf_H_f<K: Float>(input: &Vector<K>) -> Vector<K> {
     Vector::from([K::from(0.5).unwrap() * input.data[0].sin()])
-}
-
-fn ekf_H_jac<K: Float>(input: &Vector<K>) -> Matrix<K> {
-    Matrix::from([[K::from(0.5).unwrap() * input.data[0].cos(), K::zero()]])
-}
-
-const L_div_G_times_delta_t: f64 = -(9.8 / 0.5) * 0.05;
-
-fn ekf_F_f<K: Float>(input: &Vector<K>) -> Vector<K> {
-    Vector::from([
-        input.data[0] + (input.data[1] * K::from(0.05).unwrap()),
-        input.data[1] + (K::from(L_div_G_times_delta_t).unwrap() * (input.data[0]).sin()),
-    ])
-}
-
-fn ekf_F_jac<K: Float>(input: &Vector<K>) -> Matrix<K> {
-    Matrix::from([
-        [K::one(), K::from(0.05).unwrap()],
-        [
-            K::from(L_div_G_times_delta_t).unwrap() * input.data[0].cos(),
-            K::one(),
-        ],
-    ])
 }
 
 fn main() {
@@ -353,15 +363,41 @@ fn main() {
     ];
     let mut a: Kalman<f64> = Kalman::new(false, 2, 1, 0);
     let delta_t = 0.05f64;
-    a.init_F_EKF(ekf_F_f, ekf_F_jac);
+    let mut F_mat: Matrix<f64> = Matrix::from([
+        [1., delta_t, 0.5 * delta_t.pow(2), 0., 0., 0.],
+        [0., 1., delta_t, 0., 0., 0.],
+        [0., 0., 1., 0., 0., 0.],
+        [0., 0., 0., 1., delta_t, 0.5 * delta_t.pow(2)],
+        [0., 0., 0., 0., 1., delta_t],
+        [0., 0., 0., 0., 0., 1.],
+    ]);
+    a.init_F(&mut F_mat);
     let mut Q_mat: Matrix<f64> = Matrix::from([
-        [delta_t.pow(4) / 4., delta_t.pow(3) / 2.],
-        [delta_t.pow(3) / 2., delta_t.pow(2)],
+        [
+            delta_t.pow(4) / 4.,
+            delta_t.pow(3) / 2.,
+            delta_t.pow(2) / 2.,
+            0.,
+            0.,
+            0.,
+        ],
+        [delta_t.pow(3) / 2., delta_t.pow(2), delta_t, 0., 0., 0.],
+        [delta_t.pow(2) / 2., delta_t, 1., 0., 0., 0.],
+        [
+            0.,
+            0.,
+            0.,
+            delta_t.pow(4) / 4.,
+            delta_t.pow(3) / 2.,
+            delta_t.pow(2) / 2.,
+        ],
+        [0., 0., 0., delta_t.pow(3) / 2., delta_t.pow(2), delta_t],
+        [0., 0., 0., delta_t.pow(2) / 2., delta_t, 1.],
     ]);
     a.init_Q(Q_mat);
-    let R_mat: Matrix<f64> = Matrix::from([[0.01 * 0.01]]);
+    let R_mat: Matrix<f64> = Matrix::from([[25., 0.], [0., 0.0087.pow(2)]]);
     a.init_R(R_mat);
-    a.init_H_EKF(ekf_H_f, ekf_H_jac);
+    a.init_H_UKF(ukf_H_f);
     let P_mat: Matrix<f64> = Matrix::from([[5., 0.], [0., 5.]]);
     a.init_P(P_mat);
 
