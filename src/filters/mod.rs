@@ -2,6 +2,7 @@
 #![allow(unused)]
 pub mod EKF;
 pub mod LKF;
+pub mod UKF;
 
 use matrix::matrix::Matrix;
 use matrix::vector::Vector;
@@ -11,17 +12,18 @@ trait KalmanModel<K: Float> {
     fn state_dim(&self) -> usize;
     fn meas_dim(&self) -> usize;
     fn predict(
-        &self,
+        &mut self,
         x: &Vector<K>,
-        u: &Vector<K>,
+        u: &Option<Vector<K>>,
         P: &Matrix<K>,
         Q: &Matrix<K>,
     ) -> (Vector<K>, Matrix<K>); // x_prior, P_prior
     fn update(
         &self,
         x_prior: &Vector<K>,
-        P_prior: &Matrix<K>,
         z: &Vector<K>,
+        u: &Option<Vector<K>>,
+        P_prior: &Matrix<K>,
         R: &Matrix<K>,
     ) -> (Vector<K>, Matrix<K>, Matrix<K>); // x, P, K
 }
@@ -48,8 +50,8 @@ impl<K: Float, M: KalmanModel<K>> KalmanCore<K, M> {
         &self.K
     }
 
-    fn step(&mut self, z: &Vector<K>, u: &Vector<K>) {
+    fn step(&mut self, z: &Vector<K>, u: &Option<Vector<K>>) {
         let (x_prior, P_prior) = self.model.predict(&self.x, u, &self.P, &self.Q);
-        (self.x, self.P, self.K) = self.model.update(&x_prior, &P_prior, z, &self.R);
+        (self.x, self.P, self.K) = self.model.update(&x_prior, z, u, &P_prior, &self.R);
     }
 }

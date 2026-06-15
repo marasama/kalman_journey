@@ -14,9 +14,9 @@ dependencies = [
 
 [[package]]
 name = "autocfg"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "kalman_2d_multivariate_xy_car"
@@ -29,7 +29,7 @@ dependencies = [
 [[package]]
 name = "matrix"
 version = "0.1.0"
-source = "git+https://github.com/marasama/ft_matrix.git#2981614d8a9a66348855c30fc0ed80e4ef8d35b3"
+source = "git+https://github.com/marasama/ft_matrix.git#f6e491b1cb81b42ce459e59a53553e0dd3ee7406"
 dependencies = [
  "approx",
  "num-traits",

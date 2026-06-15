@@ -20,7 +20,7 @@ struct LKF<K: Float> {
 impl<K: Float + SubAssign + AddAssign> LKF<K> {
     fn update_kalman_gain(&self, P_prior: &Matrix<K>, R: &Matrix<K>) -> Matrix<K> {
         let mut gain: Matrix<K> = self.H.mul_mat_ref(P_prior).mul_mat_ref(&self.H_transpose);
-        gain.add_ref(R);
+        gain.add_mat_ref(R);
         P_prior
             .mul_mat_ref(&self.H_transpose)
             .mul_mat_ref(&gain.inverse().unwrap())
@@ -33,11 +33,11 @@ impl<K: Float + SubAssign + AddAssign> LKF<K> {
         P_prior: &Matrix<K>,
     ) -> Matrix<K> {
         let P_joseph = K_n.mul_mat_ref(R).mul_mat_ref(&K_n.transpose());
-        let main_part = self.I.sub_ref(&K_n.mul_mat_ref(&self.H));
+        let main_part = self.I.sub_mat_ref(&K_n.mul_mat_ref(&self.H));
         main_part
             .mul_mat_ref(P_prior)
             .mul_mat_ref(&main_part.transpose())
-            .add_ref(&P_joseph)
+            .add_mat_ref(&P_joseph)
     }
 
     fn new(
@@ -51,18 +51,21 @@ impl<K: Float + SubAssign + AddAssign> LKF<K> {
         assert_eq!(
             F.size(),
             (n_x, n_x),
-            "State Transition Matrix size must be (n_x, n_x)!"
+            "State Transition Matrix size must be {:?}!",
+            (n_x, n_x)
         );
         assert_eq!(
             H.size(),
             (n_z, n_x),
-            "Observation Matrix size must be (n_z, n_x)!"
+            "Observation Matrix size must be {:?}!",
+            (n_z, n_x)
         );
         if let Some(g) = &G {
             assert_eq!(
                 g.size(),
                 (n_x, n_u),
-                "Control Matrix size must be (n_x, n_u)!"
+                "Control Matrix size must be {:?}!",
+                (n_x, n_u)
             );
         };
         LKF {
@@ -91,8 +94,9 @@ impl<K: Float + AddAssign + SubAssign> KalmanModel<K> for LKF<K> {
     fn update(
         &self,
         x_prior: &Vector<K>,
-        P_prior: &Matrix<K>,
         z: &Vector<K>,
+        u: &Option<Vector<K>>,
+        P_prior: &Matrix<K>,
         R: &Matrix<K>,
     ) -> (Vector<K>, Matrix<K>, Matrix<K>) {
         assert_eq!(
@@ -123,16 +127,16 @@ impl<K: Float + AddAssign + SubAssign> KalmanModel<K> for LKF<K> {
         );
         let K_n = self.update_kalman_gain(P_prior, R);
         let x = K_n
-            .mul_vec_ref(&(z.sub_ref(&self.H.mul_vec_ref(x_prior))))
-            .add_ref(x_prior);
+            .mul_vec_ref(&(z.sub_vec_ref(&self.H.mul_vec_ref(x_prior))))
+            .add_vec_ref(x_prior);
         let P = self.update_estimation_covariance(&K_n, R, P_prior);
         (x, P, K_n)
     }
 
     fn predict(
-        &self,
+        &mut self,
         x: &Vector<K>,
-        u: &Vector<K>,
+        u: &Option<Vector<K>>,
         P: &Matrix<K>,
         Q: &Matrix<K>,
     ) -> (Vector<K>, Matrix<K>) {
@@ -160,25 +164,25 @@ impl<K: Float + AddAssign + SubAssign> KalmanModel<K> for LKF<K> {
             .F
             .mul_mat_ref(P)
             .mul_mat_ref(&self.F_transpose)
-            .add_ref(Q);
+            .add_mat_ref(Q);
         let x_prior = self.F.mul_vec_ref(x);
-        match (&self.G, u.data.is_empty()) {
-            (Some(g), false) => {
+        match (&self.G, u) {
+            (Some(g), Some(v)) => {
                 assert_eq!(
-                    u.size(),
+                    v.size(),
                     self.n_u,
                     "Input Vector size must be equal to {}",
                     self.n_u
                 );
-                (x_prior.add_ref(&g.mul_vec_ref(u)), P_prior)
+                (x_prior.add_vec_ref(&g.mul_vec_ref(v)), P_prior)
             }
-            (Some(_), true) => {
+            (Some(_), None) => {
                 panic!("Control Matrix is set but Input vector is empty!")
             }
-            (None, false) => {
+            (None, Some(_)) => {
                 panic!("Control Vector provided but G is not set!");
             }
-            (None, true) => (x_prior, P_prior),
+            (None, None) => (x_prior, P_prior),
         }
     }
 }
