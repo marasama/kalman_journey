@@ -1,46 +1,8 @@
-use crate::filters::KalmanModel;
+use crate::filters::{KalmanModel, UKF_ObservationModel, UKF_TransitionModel, UKF};
 use matrix::matrix::{funcs::inverse::identity_matrix, Matrix};
 use matrix::vector::Vector;
 use num_traits::Float;
 use std::ops::{AddAssign, Mul, SubAssign};
-
-enum UKF_TransitionModel<K: Float> {
-    Linear {
-        F: Matrix<K>,
-    },
-    NonLinear {
-        f: fn(&Matrix<K>, &Option<Vector<K>>) -> Matrix<K>,
-    },
-}
-
-enum UKF_ObservationModel<K: Float> {
-    Linear { H: Matrix<K> },
-    NonLinear { h: fn(&Matrix<K>) -> Matrix<K> },
-}
-
-/// Unscented Kalman Filter
-struct UKF<K: Float> {
-    /// State Vector
-    n_x: usize,
-    /// Measurement Vector
-    n_z: usize,
-    /// Input Vector
-    n_u: usize,
-    /// Transition Model
-    F: UKF_TransitionModel<K>,
-    /// Observation Model
-    H: UKF_ObservationModel<K>,
-    /// Control Matrix
-    G: Option<Matrix<K>>,
-    /// Sigma Points of the next step
-    sigma_points_prior: Matrix<K>,
-    /// Kappa for calculating the sigma points
-    kappa: K,
-    /// Weights for calculating the sigma points
-    weights: Matrix<K>,
-    /// Weight but in diagonal for computational advantage
-    weights_diag: Matrix<K>,
-}
 
 impl<K: Float + AddAssign + SubAssign> UKF<K> {
     fn calculate_sigma_points(&self, x: &Vector<K>, P: &Matrix<K>) -> Matrix<K> {
@@ -68,23 +30,16 @@ impl<K: Float + AddAssign + SubAssign> UKF<K> {
         }
     }
 
-    fn calculate_weights(w_0: K, w_i: K, length: usize) -> (Matrix<K>, Matrix<K>) {
+    fn calculate_weights(w_0: K, w_i: K, length: usize) -> (Vector<K>, Matrix<K>) {
         let mut diagonal = identity_matrix(length);
         diagonal.scl(w_i);
         diagonal.data[0] = w_0;
         let mut new_data = vec![w_i; length];
         new_data[0] = w_0;
-        (
-            Matrix {
-                data: new_data,
-                rows: 1,
-                cols: length,
-            },
-            diagonal,
-        )
+        (Vector { data: new_data }, diagonal)
     }
 
-    fn new(
+    pub fn new(
         n_x: usize,
         n_z: usize,
         n_u: usize,
@@ -164,7 +119,7 @@ impl<K: Float + AddAssign + SubAssign> KalmanModel<K> for UKF<K> {
             UKF_ObservationModel::NonLinear { h } => h(&self.sigma_points_prior),
         };
 
-        let pred_meas_mean = meas_space.mul_mat_ref(&self.weights).to_vector();
+        let pred_meas_mean = meas_space.mul_vec_ref(&self.weights);
         let tmp_subt = meas_space.sub_each_col(&pred_meas_mean);
         let meas_space_cov = tmp_subt
             .mul_mat_ref(&self.weights_diag)
@@ -191,7 +146,6 @@ impl<K: Float + AddAssign + SubAssign> KalmanModel<K> for UKF<K> {
         Q: &Matrix<K>,
     ) -> (Vector<K>, Matrix<K>) {
         let sigma_points = self.calculate_sigma_points(x, P);
-
         self.sigma_points_prior = match &self.F {
             UKF_TransitionModel::Linear { F, .. } => {
                 let mut transformed = F.mul_mat_ref(&sigma_points);
@@ -210,11 +164,7 @@ impl<K: Float + AddAssign + SubAssign> KalmanModel<K> for UKF<K> {
             }
             UKF_TransitionModel::NonLinear { f } => f(&sigma_points, u),
         };
-
-        let x_prior = self
-            .sigma_points_prior
-            .mul_mat_ref(&self.weights)
-            .to_vector();
+        let x_prior = self.sigma_points_prior.mul_vec_ref(&self.weights);
         let tmp_subt = self.sigma_points_prior.sub_each_col(&x_prior);
         let P_prior = tmp_subt
             .mul_mat_ref(&self.weights_diag)

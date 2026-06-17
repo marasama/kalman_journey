@@ -1,41 +1,8 @@
-use crate::filters::KalmanModel;
+use crate::filters::{EKF_ObservationModel, EKF_TransitionModel, KalmanModel, EKF};
 use matrix::matrix::{funcs::inverse::identity_matrix, Matrix};
 use matrix::vector::Vector;
 use num_traits::Float;
 use std::ops::{AddAssign, SubAssign};
-
-enum EKF_TransitionModel<K: Float> {
-    Linear {
-        F: Matrix<K>,
-        F_transpose: Matrix<K>,
-    },
-    NonLinear {
-        f: fn(&Vector<K>, &Option<Vector<K>>) -> Vector<K>,
-        jac: fn(&Vector<K>, &Option<Vector<K>>) -> Matrix<K>,
-    },
-}
-
-enum EKF_ObservationModel<K: Float> {
-    Linear {
-        H: Matrix<K>,
-        H_transpose: Matrix<K>,
-    },
-    NonLinear {
-        f: fn(&Vector<K>, &Option<Vector<K>>) -> Vector<K>,
-        jac: fn(&Vector<K>, &Option<Vector<K>>) -> Matrix<K>,
-    },
-}
-
-/// Extended Kalman Filter
-struct EKF<K: Float> {
-    n_x: usize,
-    n_z: usize,
-    n_u: usize,
-    F: EKF_TransitionModel<K>,
-    H: EKF_ObservationModel<K>,
-    G: Option<Matrix<K>>,
-    I: Matrix<K>,
-}
 
 impl<K: Float + AddAssign + SubAssign> EKF<K> {
     fn update_kalman_gain(
@@ -95,7 +62,7 @@ impl<K: Float + AddAssign + SubAssign> EKF<K> {
             .add_mat_ref(&joseph)
     }
 
-    fn new(
+    pub fn new(
         n_x: usize,
         n_z: usize,
         n_u: usize,

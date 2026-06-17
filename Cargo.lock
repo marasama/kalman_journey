@@ -29,7 +29,7 @@ dependencies = [
 [[package]]
 name = "matrix"
 version = "0.1.0"
-source = "git+https://github.com/marasama/ft_matrix.git#f6e491b1cb81b42ce459e59a53553e0dd3ee7406"
+source = "git+https://github.com/marasama/ft_matrix.git#b3c0d4b182970b90b31a322907e84cb7f3d2953d"
 dependencies = [
  "approx",
  "num-traits",

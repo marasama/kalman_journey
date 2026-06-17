@@ -1,21 +1,8 @@
-use crate::filters::KalmanModel;
+use crate::filters::{KalmanModel, LKF};
 use matrix::matrix::{funcs::inverse::identity_matrix, Matrix};
 use matrix::vector::Vector;
 use num_traits::Float;
 use std::ops::{AddAssign, SubAssign};
-
-/// Linear Kalman Filter
-struct LKF<K: Float> {
-    n_x: usize,
-    n_z: usize,
-    n_u: usize,
-    F: Matrix<K>,
-    F_transpose: Matrix<K>,
-    H: Matrix<K>,
-    H_transpose: Matrix<K>,
-    G: Option<Matrix<K>>,
-    I: Matrix<K>,
-}
 
 impl<K: Float + SubAssign + AddAssign> LKF<K> {
     fn update_kalman_gain(&self, P_prior: &Matrix<K>, R: &Matrix<K>) -> Matrix<K> {
