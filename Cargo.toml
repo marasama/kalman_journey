@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 matrix = {git = "https://github.com/marasama/ft_matrix.git"}
 num-traits = "0.2.19"
+plotters = "0.3.7"

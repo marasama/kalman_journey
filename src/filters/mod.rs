@@ -120,8 +120,8 @@ pub struct UKF<K: Float> {
     G: Option<Matrix<K>>,
     /// Sigma Points of the next step
     sigma_points_prior: Matrix<K>,
-    /// Kappa for calculating the sigma points
-    kappa: K,
+    /// Lambda calculated with tune parameters for calculating the sigma points
+    lambda: K,
     /// Weights for calculating the sigma points
     weights: Vector<K>,
     /// Weight but in diagonal for computational advantage

@@ -7,7 +7,7 @@ use std::ops::{AddAssign, Mul, SubAssign};
 impl<K: Float + AddAssign + SubAssign> UKF<K> {
     fn calculate_sigma_points(&self, x: &Vector<K>, P: &Matrix<K>) -> Matrix<K> {
         let mut data: Vec<K> = vec![K::zero(); (self.n_x * 2 + 1) * self.n_x];
-        let scale: K = K::from(self.n_x).unwrap() + self.kappa;
+        let scale: K = K::from(self.n_x).unwrap() + self.lambda;
         let num_sigma_points = self.n_x * 2 + 1;
         let sqrt_mat = P.scl_mat_ref(scale).cholesky();
         for r in 0..self.n_x {
@@ -30,10 +30,10 @@ impl<K: Float + AddAssign + SubAssign> UKF<K> {
         }
     }
 
-    fn calculate_weights(w_0: K, w_i: K, length: usize) -> (Vector<K>, Matrix<K>) {
+    fn calculate_weights(w_0: K, w_0_c: K, w_i: K, length: usize) -> (Vector<K>, Matrix<K>) {
         let mut diagonal = identity_matrix(length);
         diagonal.scl(w_i);
-        diagonal.data[0] = w_0;
+        diagonal.data[0] = w_0_c;
         let mut new_data = vec![w_i; length];
         new_data[0] = w_0;
         (Vector { data: new_data }, diagonal)
@@ -46,8 +46,11 @@ impl<K: Float + AddAssign + SubAssign> UKF<K> {
         F: UKF_TransitionModel<K>,
         H: UKF_ObservationModel<K>,
         G: Option<Matrix<K>>,
+        alpha: K,
+        beta: K,
         kappa: K,
     ) -> Self {
+        let n = K::from(n_x).unwrap();
         match &F {
             UKF_TransitionModel::Linear { F } => assert_eq!(
                 F.size(),
@@ -78,10 +81,12 @@ impl<K: Float + AddAssign + SubAssign> UKF<K> {
             panic!("G is set but Nonlinear Transition Model does not use it!");
         }
 
+        let lambda = num_traits::pow(alpha, 2) * (n + kappa) - n;
         let (weights, weights_diag) = UKF::calculate_weights(
-            kappa / (K::from(n_x).unwrap() + kappa),
-            K::one() / ((K::from(n_x).unwrap() + kappa) * K::from(2).unwrap()),
-            n_x * 2 + 1,
+            lambda / (n + lambda),
+            lambda / (n + lambda) + (K::one() - num_traits::pow(alpha, 2) + beta),
+            K::one() / (K::from(2).unwrap() * (n + lambda)),
+            2 * n_x + 1,
         );
 
         UKF {
@@ -92,7 +97,7 @@ impl<K: Float + AddAssign + SubAssign> UKF<K> {
             H,
             G,
             sigma_points_prior: Matrix::empty(),
-            kappa,
+            lambda,
             weights,
             weights_diag,
         }
